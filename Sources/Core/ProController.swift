@@ -83,6 +83,8 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     private var isConnected: Bool { hid != nil || gameDevice != nil }
     private var watcher: HIDWatcher?
     private var initTries = 0
+    private var gotReport = false  // la manette a envoyé au moins un rapport sur cette connexion
+    private var wakeLink: HIDLink?  // lien temporaire du mode « laisser au jeu »
     private var pinAttempt = 0
     private var ready = false
     private var lastState: ProState?
@@ -318,11 +320,24 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         initTries = 0
         onPhase?(.connecting)
         log("Manette connectée à macOS (« \(link.name) »). Initialisation…")
-        // Laisser bluetoothd finir de configurer la liaison avant d’écrire (sinon STATUS 122).
+        gotReport = false
         let gen = generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self, self.generation == gen else { return }
-            self.initializeWithRetry()
+        wake(link, gen: gen) { [weak self] in self?.initializeWithRetry() }
+    }
+
+    /// Échanger avec la manette dès la connexion : si macOS passe la liaison en mode « sniff » avant
+    /// le premier échange, la manette se tait puis la liaison meurt. On demande son état toutes les
+    /// 100 ms jusqu’à la première réponse (3 s au plus), puis on continue.
+    private func wake(_ link: HIDLink, gen: Int, tries: Int = 0, then done: @escaping () -> Void) {
+        guard generation == gen, !stopped else { return }
+        if gotReport || tries >= 30 {
+            if !gotReport { log("La manette ne répond pas encore à la demande d’état.") }
+            done()
+            return
+        }
+        link.send([0x15, 0x00])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.wake(link, gen: gen, tries: tries + 1, then: done)
         }
     }
 
@@ -338,20 +353,27 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         }
         log("Manette connectée à macOS (« \(name) ») et laissée au jeu. Lancez le jeu (WiiCompiled…).")
         onPhase?(.ready)
-        // Sans commande, les 4 voyants clignotent comme si la manette n’était pas connectée :
-        // on allume le voyant 1 une fois, puis on referme pour laisser le jeu ouvrir la manette.
+        // Réveiller la manette tout de suite (voir wake), allumer le voyant 1 (sinon les 4 voyants
+        // clignotent comme si elle n’était pas connectée), puis refermer pour laisser le jeu l’ouvrir.
+        guard let link = HIDLink(device: hidDevice) else { return }
+        wakeLink = link
+        gotReport = false
+        link.onReport = { [weak self] _ in self?.gotReport = true }
         let gen = generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self, self.generation == gen, self.gameDevice != nil, let link = HIDLink(device: hidDevice) else { return }
+        wake(link, gen: gen) { [weak self] in
             let r = link.send([0x11, 0x10])
             if r != kIOReturnSuccess { log("Voyant joueur 1 : \(hex(r)).") }
             link.close()
+            self?.wakeLink = nil
         }
     }
 
     private func hidDeviceGone(_ hidDevice: IOHIDDevice) {
         guard let current = gameDevice, CFEqual(current, hidDevice) else { return }
         gameDevice = nil
+        generation += 1
+        wakeLink?.close()
+        wakeLink = nil
         device = nil
         log("Manette déconnectée.")
         waitForController()
@@ -570,6 +592,8 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         pairing = nil
         successfulPair = nil
         gameDevice = nil
+        wakeLink?.close()
+        wakeLink = nil
         hid?.onRemoved = nil
         hid?.close()
         hid = nil
@@ -629,6 +653,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     }
 
     private func handleReport(_ r: [UInt8]) {
+        gotReport = true
         if verbose && r[0] != 0x34 { log("RX \(hexBytes(r))") }
         switch r[0] {
         case 0x20 where r.count >= 7:

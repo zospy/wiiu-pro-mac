@@ -67,7 +67,9 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     var verbose = false
     /// Mode « laisser au jeu » : l’app appaire et connecte la manette, puis ne l’ouvre pas,
     /// pour qu’un jeu basé sur SDL (WiiCompiled…) puisse la prendre en exclusivité.
-    var leaveToGame = false
+    var leaveToGame = false {
+        didSet { if leaveToGame != oldValue { switchMode() } }
+    }
 
     private var fixedAddress: String?
     private var seen: [String: FoundDevice] = [:]
@@ -338,6 +340,29 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         link.send([0x15, 0x00])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.wake(link, gen: gen, tries: tries + 1, then: done)
+        }
+    }
+
+    /// Change de mode sans couper la liaison Bluetooth (la couper oblige à réappairer).
+    private func switchMode() {
+        if leaveToGame, let link = hid {
+            let wasReady = ready
+            ready = false
+            lastState = nil
+            generation += 1
+            link.onRemoved = nil
+            link.close()
+            hid = nil
+            if wasReady { onConnection?(false, nil) }
+            gameDevice = link.device
+            log("Manette laissée au jeu, sans déconnexion.")
+            onPhase?(.ready)
+        } else if !leaveToGame, let hidDevice = gameDevice {
+            wakeLink?.close()
+            wakeLink = nil
+            gameDevice = nil
+            generation += 1
+            hidAppeared(hidDevice)
         }
     }
 

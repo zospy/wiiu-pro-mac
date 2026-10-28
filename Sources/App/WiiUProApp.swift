@@ -90,11 +90,6 @@ final class AppModel: ObservableObject {
             bridge.leaveToGame = leaveToGame
             log(leaveToGame ? "Mode : manette laissée au jeu." : "Mode : clavier et souris.")
             refreshOutput()
-            // Le changement s’applique à la prochaine connexion : on reconnecte si besoin.
-            if isRunning && phase != .demo {
-                bridge.stop()
-                connect()
-            }
         }
     }
 

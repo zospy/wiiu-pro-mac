@@ -83,7 +83,6 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     private var isConnected: Bool { hid != nil || gameDevice != nil }
     private var watcher: HIDWatcher?
     private var initTries = 0
-    private var lastPairedAt: Date?  // un appairage tout neuf ne doit pas être effacé
     private var pinAttempt = 0
     private var ready = false
     private var lastState: ProState?
@@ -225,15 +224,10 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
             log("Manette détectée : \(address) « \(found.name ?? "sans nom") »")
             device = dev
             stopInquiry()
-            let recentlyPaired = lastPairedAt.map { Date().timeIntervalSince($0) < 90 } ?? false
-            if dev.isPaired(), recentlyPaired {
-                log("Manette appairée à l’instant : attente de sa reconnexion.")
-                waitForController()
-                return
-            }
             if dev.isPaired() {
                 // Trouvée en mode SYNC alors qu’elle est déjà appairée : souvent elle se reconnecte
-                // d’elle-même dans la foulée. Sinon (ancienne clé refusée), on la réappaire.
+                // d’elle-même dans la foulée. Sinon (ancienne clé refusée, ou première connexion
+                // muette juste après l’appairage), on la réappaire : c’est ce qui la remet en route.
                 log("Manette déjà appairée en mode SYNC : attente de sa reconnexion…")
                 generation += 1
                 let gen = generation
@@ -486,7 +480,6 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         if error == kIOReturnSuccess {
             log("Appairage réussi. Connexion à la manette…")
             successfulPair = p
-            lastPairedAt = Date()
             // macOS ouvre maintenant la connexion HID ; la manette sera signalée par la surveillance HID.
             let gen = generation
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in

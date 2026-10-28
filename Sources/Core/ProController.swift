@@ -65,6 +65,9 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     var onPhase: ((Phase) -> Void)?
     var onDeviceFound: ((FoundDevice) -> Void)?
     var verbose = false
+    /// Mode « laisser au jeu » : l’app appaire et connecte la manette, puis ne l’ouvre pas,
+    /// pour qu’un jeu basé sur SDL (WiiCompiled…) puisse la prendre en exclusivité.
+    var leaveToGame = false
 
     private var fixedAddress: String?
     private var seen: [String: FoundDevice] = [:]
@@ -76,6 +79,8 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     private var pairing: IOBluetoothDevicePair?
     private var successfulPair: IOBluetoothDevicePair?  // gardé en vie pour que macOS termine la connexion HID
     private var hid: HIDLink?
+    private var gameDevice: IOHIDDevice?  // manette connectée et laissée au jeu
+    private var isConnected: Bool { hid != nil || gameDevice != nil }
     private var watcher: HIDWatcher?
     private var initTries = 0
     private var lastPairedAt: Date?  // un appairage tout neuf ne doit pas être effacé
@@ -92,7 +97,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     func start() {
         stopped = false
         startWatcher()
-        guard hid == nil else { return }
+        guard !isConnected else { return }
         if let address = fixedAddress {
             guard let dev = IOBluetoothDevice(addressString: address) else {
                 log("Adresse Bluetooth invalide : \(address)")
@@ -117,14 +122,14 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     /// l’appeler (elle ne répond pas à l’authentification). On attend donc sans lancer de recherche,
     /// qui gênerait la connexion entrante, puis on fait une courte recherche au cas où on appuie sur SYNC.
     private func waitForController() {
-        guard !stopped, hid == nil else { return }
+        guard !stopped, !isConnected else { return }
         device = nil
         onPhase?(.searching)
         log("En attente de la manette : appuyez sur un bouton (A, B…). Jamais appairée à ce Mac ? Appuyez sur SYNC.")
         generation += 1
         let gen = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
-            guard let self, self.generation == gen, self.hid == nil, !self.stopped, self.device == nil else { return }
+            guard let self, self.generation == gen, !self.isConnected, !self.stopped, self.device == nil else { return }
             self.startInquiry()
         }
     }
@@ -286,12 +291,18 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         guard watcher == nil else { return }
         let w = HIDWatcher()
         w.onAppear = { [weak self] d in self?.hidAppeared(d) }
+        w.onRemove = { [weak self] d in self?.hidDeviceGone(d) }
         watcher = w
         w.start()
     }
 
     private func hidAppeared(_ hidDevice: IOHIDDevice) {
-        guard !stopped, hid == nil, let link = HIDLink(device: hidDevice) else { return }
+        guard !stopped, !isConnected else { return }
+        if leaveToGame {
+            handOffToGame(hidDevice)
+            return
+        }
+        guard let link = HIDLink(device: hidDevice) else { return }
         stopInquiry()
         hid = link
         link.onReport = { [weak self] bytes in self?.handleReport(bytes) }
@@ -309,6 +320,25 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
             guard let self, self.generation == gen else { return }
             self.initializeWithRetry()
         }
+    }
+
+    /// La manette est connectée à macOS : on ne l’ouvre pas (SDL l’ouvre en exclusivité) et on
+    /// n’envoie aucune commande, le jeu l’initialise lui-même.
+    private func handOffToGame(_ hidDevice: IOHIDDevice) {
+        stopInquiry()
+        gameDevice = hidDevice
+        generation += 1
+        let name = IOHIDDeviceGetProperty(hidDevice, kIOHIDProductKey as CFString) as? String ?? "manette"
+        log("Manette connectée à macOS (« \(name) ») et laissée au jeu. Lancez le jeu (WiiCompiled…).")
+        onPhase?(.ready)
+    }
+
+    private func hidDeviceGone(_ hidDevice: IOHIDDevice) {
+        guard let current = gameDevice, CFEqual(current, hidDevice) else { return }
+        gameDevice = nil
+        device = nil
+        log("Manette déconnectée.")
+        waitForController()
     }
 
     private func initializeWithRetry() {
@@ -401,7 +431,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
             // macOS ouvre maintenant la connexion HID ; la manette sera signalée par la surveillance HID.
             let gen = generation
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-                guard let self, self.generation == gen, self.hid == nil else { return }
+                guard let self, self.generation == gen, !self.isConnected else { return }
                 self.waitForController()
             }
         } else if pinAttempt == 0 {
@@ -462,7 +492,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     }
 
     private func fail(_ reason: String) {
-        guard hid == nil else { return }  // une manette ouverte en HID est gérée par hidRemoved
+        guard !isConnected else { return }  // une manette connectée en HID est gérée par la surveillance HID
         log("Déconnexion : \(reason)")
         let dev = teardown()
 
@@ -487,6 +517,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         pairing?.stop()
         pairing = nil
         successfulPair = nil
+        gameDevice = nil
         hid?.onRemoved = nil
         hid?.close()
         hid = nil

@@ -22,6 +22,9 @@ final class Bridge {
     var verbose = false {
         didSet { server.verbose = verbose; controller?.verbose = verbose }
     }
+    var leaveToGame = false {
+        didSet { controller?.leaveToGame = leaveToGame }
+    }
     var onPhase: ((Phase) -> Void)?
     var onUpdate: ((ProState, DSUServer.Pad) -> Void)?
     var onDeviceFound: ((FoundDevice) -> Void)?
@@ -51,6 +54,7 @@ final class Bridge {
         }
         let c = ProController(address: address)
         c.verbose = verbose
+        c.leaveToGame = leaveToGame
         c.onConnection = { [weak self] connected, addr in self?.setConnected(connected, address: addr) }
         c.onState = { [weak self] s in self?.publish(s) }
         c.onDeviceFound = { [weak self] d in self?.onDeviceFound?(d) }

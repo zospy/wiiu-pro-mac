@@ -36,6 +36,16 @@ Touches par défaut :
 | Croix et stick gauche | Flèches |
 | Stick droit | Souris |
 
+## Mode « Laisser au jeu » (WiiCompiled, Retro Rewind…)
+
+Dans Réglages, choisissez **Laisser au jeu**. L'app s'occupe alors seulement de l'appairage (code binaire) et de la connexion Bluetooth, sans ouvrir la manette ni envoyer de touches : un jeu basé sur SDL, comme [WiiCompiled](https://github.com/patchzyy/wiicompiled) (Mario Kart Wii natif, avec Retro Rewind), peut la lire lui-même comme une vraie manette. L'autorisation Accessibilité n'est pas nécessaire dans ce mode.
+
+1. Connectez la manette dans l'app (badge vert « laissée au jeu »).
+2. Lancez WiiCompiled, appuyez sur F10 et attribuez la manette Nintendo au joueur 1.
+3. Laissez l'app ouverte : elle reconnecte la manette si elle se coupe.
+
+*Non vérifié* : que la version de SDL utilisée par le jeu reconnaisse bien la Wii U Pro (produit 0x0330).
+
 ## En cas de problème
 
 Le journal est aussi écrit dans `~/Library/Logs/WiiUPro.log` (recréé à chaque lancement). Cochez « Détails techniques » avant de refaire l'essai pour plus d'informations.

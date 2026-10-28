@@ -8,6 +8,7 @@ final class HIDWatcher {
     static let productIDs: Set<Int> = [0x0330, 0x0306]  // Wii U Pro, Wiimote
 
     var onAppear: ((IOHIDDevice) -> Void)?
+    var onRemove: ((IOHIDDevice) -> Void)?
     private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 
     func start() {
@@ -20,6 +21,10 @@ final class HIDWatcher {
             guard let context else { return }
             Unmanaged<HIDWatcher>.fromOpaque(context).takeUnretainedValue().onAppear?(device)
         }, context)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, device in
+            guard let context else { return }
+            Unmanaged<HIDWatcher>.fromOpaque(context).takeUnretainedValue().onRemove?(device)
+        }, context)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         let r = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         if r != kIOReturnSuccess { log("Surveillance HID impossible : \(hex(r)).") }
@@ -27,6 +32,7 @@ final class HIDWatcher {
 
     func stop() {
         IOHIDManagerRegisterDeviceMatchingCallback(manager, nil, nil)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, nil, nil)
         IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
     }

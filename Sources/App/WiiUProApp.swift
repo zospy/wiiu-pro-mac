@@ -82,6 +82,21 @@ final class AppModel: ObservableObject {
     @Published var mouseSpeed: Double {
         didSet { io.mouseSpeed = mouseSpeed; defaults.set(mouseSpeed, forKey: "mouseSpeed") }
     }
+    /// L’app connecte la manette puis la laisse à un jeu basé sur SDL (WiiCompiled…).
+    @Published var leaveToGame: Bool {
+        didSet {
+            guard leaveToGame != oldValue else { return }
+            defaults.set(leaveToGame, forKey: "leaveToGame")
+            bridge.leaveToGame = leaveToGame
+            log(leaveToGame ? "Mode : manette laissée au jeu." : "Mode : clavier et souris.")
+            refreshOutput()
+            // Le changement s’applique à la prochaine connexion : on reconnecte si besoin.
+            if isRunning && phase != .demo {
+                bridge.stop()
+                connect()
+            }
+        }
+    }
 
     private let defaults = UserDefaults.standard
     private let bridge = Bridge()
@@ -100,6 +115,8 @@ final class AppModel: ObservableObject {
         leftStickAsArrows = defaults.object(forKey: "leftStickAsArrows") as? Bool ?? true
         rightStickAsMouse = defaults.object(forKey: "rightStickAsMouse") as? Bool ?? true
         mouseSpeed = defaults.object(forKey: "mouseSpeed") as? Double ?? 14
+        leaveToGame = defaults.bool(forKey: "leaveToGame")
+        bridge.leaveToGame = leaveToGame
         io.leftStickAsArrows = leftStickAsArrows
         io.rightStickAsMouse = rightStickAsMouse
         io.mouseSpeed = mouseSpeed
@@ -194,7 +211,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshOutput() {
-        io.enabled = trusted && phase == .ready
+        io.enabled = trusted && phase == .ready && !leaveToGame
     }
 
     private func append(_ line: String) {
@@ -228,10 +245,10 @@ struct ContentView: View {
                 Text("Manette Wii U Pro")
                     .font(.title2.bold())
                 Spacer()
-                StatusBadge(phase: model.phase)
+                StatusBadge(phase: model.phase, leaveToGame: model.leaveToGame)
             }
 
-            if !model.trusted {
+            if !model.trusted && !model.leaveToGame {
                 TrustBanner()
             }
 
@@ -244,7 +261,11 @@ struct ContentView: View {
                     OptionsPanel()
                 }
                 .frame(width: 320)
-                ControllerPanel()
+                if model.leaveToGame {
+                    GameModePanel()
+                } else {
+                    ControllerPanel()
+                }
             }
 
             LogPanel()
@@ -255,13 +276,14 @@ struct ContentView: View {
 
 struct StatusBadge: View {
     let phase: Bridge.Phase
+    var leaveToGame = false
 
     private var info: (String, Color) {
         switch phase {
         case .idle: ("Déconnectée", .gray)
         case .searching: ("Recherche… appuyez sur SYNC", .orange)
         case .connecting: ("Connexion…", .orange)
-        case .ready: ("Manette connectée", .green)
+        case .ready: (leaveToGame ? "Manette connectée · laissée au jeu" : "Manette connectée", .green)
         case .demo: ("Démo", .blue)
         }
     }
@@ -376,20 +398,66 @@ struct OptionsPanel: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("Stick gauche = croix directionnelle", isOn: $model.leftStickAsArrows)
-                Toggle("Stick droit = souris", isOn: $model.rightStickAsMouse)
-                HStack {
-                    Text("Vitesse").foregroundStyle(.secondary)
-                    Slider(value: $model.mouseSpeed, in: 4...40)
-                        .disabled(!model.rightStickAsMouse)
+                Picker("Utilisation", selection: $model.leaveToGame) {
+                    Text("Clavier et souris").tag(false)
+                    Text("Laisser au jeu").tag(true)
                 }
-                Button("Touches par défaut") { model.resetMapping() }
-                    .controlSize(.small)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Divider()
+                Group {
+                    Toggle("Stick gauche = croix directionnelle", isOn: $model.leftStickAsArrows)
+                    Toggle("Stick droit = souris", isOn: $model.rightStickAsMouse)
+                    HStack {
+                        Text("Vitesse").foregroundStyle(.secondary)
+                        Slider(value: $model.mouseSpeed, in: 4...40)
+                            .disabled(!model.rightStickAsMouse)
+                    }
+                    Button("Touches par défaut") { model.resetMapping() }
+                        .controlSize(.small)
+                }
+                .disabled(model.leaveToGame)
             }
+
             .font(.callout)
             .padding(4)
         } label: {
             Label("Réglages", systemImage: "slider.horizontal.3")
+        }
+    }
+}
+
+struct GameModePanel: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Label(model.phase == .ready ? "La manette est connectée et laissée au jeu."
+                                            : "La manette sera laissée au jeu dès sa connexion.",
+                      systemImage: model.phase == .ready ? "checkmark.circle.fill" : "hourglass")
+                    .font(.headline)
+                    .foregroundStyle(model.phase == .ready ? Color.green : Color.secondary)
+                Text("L’app s’occupe seulement de l’appairage et de la connexion Bluetooth. Elle n’envoie aucune touche : le jeu lit lui-même la manette, comme une vraie manette (sticks analogiques compris).")
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Text("Pour WiiCompiled / Retro Rewind").font(.subheadline.bold())
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("1. Connectez la manette ici (badge vert).")
+                    Text("2. Lancez WiiCompiled, appuyez sur F10 et attribuez la manette Nintendo au joueur 1.")
+                    Text("3. Laissez cette app ouverte : elle reconnecte la manette si elle se coupe.")
+                }
+                .font(.callout)
+                Text("L’affichage en direct est désactivé dans ce mode : le jeu doit pouvoir ouvrir la manette seul.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        } label: {
+            Label("Manette laissée au jeu", systemImage: "gamecontroller")
         }
     }
 }

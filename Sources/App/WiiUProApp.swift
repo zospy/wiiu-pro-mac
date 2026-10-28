@@ -163,6 +163,11 @@ final class AppModel: ObservableObject {
         trustTimer = timer
 
         log("Journal enregistré dans \(Self.logURL.path)")
+
+        // Se mettre tout de suite à l’écoute de la manette : il suffit d’ouvrir l’app et d’appuyer sur SYNC.
+        if ProcessInfo.processInfo.environment["WIIUPRO_SNAPSHOT"] == nil {
+            DispatchQueue.main.async { [weak self] in self?.connect() }
+        }
     }
 
     var isRunning: Bool { phase != .idle }

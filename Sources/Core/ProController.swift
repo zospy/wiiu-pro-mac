@@ -416,15 +416,52 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         }
     }
 
-    private func pinBytes(for dev: IOBluetoothDevice) -> [UInt8] {
-        let source = pinAttempt == 0 ? IOBluetoothHostController.default()?.addressAsString() : dev.addressString
-        let bytes = (source ?? "").split(whereSeparator: { $0 == ":" || $0 == "-" }).compactMap { UInt8($0, radix: 16) }
-        return Array(bytes.reversed())
+    /// Code d’appairage, ou nil si l’adresse nécessaire est introuvable (ne jamais envoyer un code nul).
+    private func pinBytes(for dev: IOBluetoothDevice) -> [UInt8]? {
+        let address = pinAttempt == 0 ? Self.hostAddress() : Self.parseAddress(dev.addressString)
+        return address.map { Array($0.reversed()) }
+    }
+
+    private static func parseAddress(_ text: String?) -> [UInt8]? {
+        let bytes = (text ?? "").split(whereSeparator: { $0 == ":" || $0 == "-" }).compactMap { UInt8($0, radix: 16) }
+        return bytes.count == 6 && bytes.contains(where: { $0 != 0 }) ? bytes : nil
+    }
+
+    /// Adresse Bluetooth du Mac. IOBluetoothHostController peut renvoyer une adresse vide si on
+    /// l’interroge trop tôt après le lancement : on se rabat alors sur la dernière adresse connue,
+    /// puis sur system_profiler.
+    private static func hostAddress() -> [UInt8]? {
+        let key = "hostBluetoothAddress"
+        if let bytes = parseAddress(IOBluetoothHostController.default()?.addressAsString()) {
+            UserDefaults.standard.set(bytes.map { String(format: "%02X", $0) }.joined(separator: ":"), forKey: key)
+            return bytes
+        }
+        if let bytes = parseAddress(UserDefaults.standard.string(forKey: key)) { return bytes }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        process.arguments = ["SPBluetoothDataType", "-json"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = json["SPBluetoothDataType"] as? [[String: Any]],
+              let properties = entries.first?["controller_properties"] as? [String: Any],
+              let bytes = parseAddress(properties["controller_address"] as? String) else { return nil }
+        UserDefaults.standard.set(properties["controller_address"] as? String, forKey: key)
+        return bytes
     }
 
     func devicePairingPINCodeRequest(_ sender: Any!) {
         guard let p = sender as? IOBluetoothDevicePair, let dev = device else { return }
-        let bytes = pinBytes(for: dev)
+        guard let bytes = pinBytes(for: dev) else {
+            log("Adresse Bluetooth du Mac introuvable : appairage annulé (aucun code nul envoyé).")
+            p.stop()
+            return
+        }
         let what = pinAttempt == 0 ? "adresse du Mac" : "adresse de la manette"
         if PrivatePairing.replyBinaryPIN(p, device: dev, bytes: bytes) {
             log("Code binaire envoyé directement (\(what) inversée : \(hexBytes(bytes))).")

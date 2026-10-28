@@ -79,6 +79,7 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     private var interrupt: IOBluetoothL2CAPChannel?
     private var inquiry: IOBluetoothDeviceInquiry?
     private var pairing: IOBluetoothDevicePair?
+    private var pinProxy: LegacyPINProxy?  // relais des demandes « sans code » (macOS 26)
     private var successfulPair: IOBluetoothDevicePair?  // gardé en vie pour que macOS termine la connexion HID
     private var hid: HIDLink?
     private var gameDevice: IOHIDDevice?  // manette connectée et laissée au jeu
@@ -448,9 +449,20 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         }
         p.delegate = self
         PrivatePairing.enableUserDefinedPIN(p)
+        pinProxy?.restore()
+        pinProxy = nil
+        if #available(macOS 26.0, *), pinAttempt == 0, let host = Self.hostAddress(),
+           let proxy = PrivatePairing.installLegacyPINProxy(for: dev, key: PrivatePairing.key(from: Array(host.reversed()))) {
+            proxy.onReply = {
+                log("macOS a demandé un appairage « sans code » : code binaire envoyé à la place (adresse du Mac inversée).")
+            }
+            pinProxy = proxy
+        }
         pairing = p
         let r = p.start()
         if r != kIOReturnSuccess {
+            pinProxy?.restore()
+            pinProxy = nil
             log("Impossible de lancer l’appairage : \(hex(r)). Tentative de connexion directe.")
             pairing = nil
             openControl(dev)
@@ -524,6 +536,8 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
     func devicePairingFinished(_ sender: Any!, error: IOReturn) {
         guard let p = sender as? IOBluetoothDevicePair, p === pairing, let dev = device, !stopped else { return }
         pairing = nil
+        pinProxy?.restore()
+        pinProxy = nil
         if error == kIOReturnSuccess {
             log("Appairage réussi. Connexion à la manette…")
             successfulPair = p
@@ -615,6 +629,8 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         let dev = device
         pairing?.stop()
         pairing = nil
+        pinProxy?.restore()
+        pinProxy = nil
         successfulPair = nil
         gameDevice = nil
         wakeLink?.close()

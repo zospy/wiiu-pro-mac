@@ -220,22 +220,32 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
             log("Appareil vu : \(address) « \(found.name ?? "nom inconnu") » classe 0x\(String(format: "%06X", found.classOfDevice))")
             onDeviceFound?(found)
         }
-        guard device == nil, !stopped else { return }
+        guard device == nil, !stopped, !isConnected else { return }
         if found.looksLikeController {
             log("Manette détectée : \(address) « \(found.name ?? "sans nom") »")
             device = dev
             stopInquiry()
-            // Trouvée par la recherche = manette en mode SYNC : elle attend un nouvel appairage,
-            // l’ancienne clé ne sera plus acceptée. On l’oublie avant de réappairer.
             let recentlyPaired = lastPairedAt.map { Date().timeIntervalSince($0) < 90 } ?? false
             if dev.isPaired(), recentlyPaired {
                 log("Manette appairée à l’instant : attente de sa reconnexion.")
                 waitForController()
                 return
             }
-            if dev.isPaired(), PrivatePairing.unpair(dev) {
-                log("Manette en mode SYNC : remplacement de l’ancien appairage.")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.connect(dev, forcePair: true) }
+            if dev.isPaired() {
+                // Trouvée en mode SYNC alors qu’elle est déjà appairée : souvent elle se reconnecte
+                // d’elle-même dans la foulée. Sinon (ancienne clé refusée), on la réappaire.
+                log("Manette déjà appairée en mode SYNC : attente de sa reconnexion…")
+                generation += 1
+                let gen = generation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                    guard let self, self.generation == gen, !self.isConnected, !self.stopped else { return }
+                    if PrivatePairing.unpair(dev) {
+                        log("Pas de reconnexion : remplacement de l’ancien appairage.")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.connect(dev, forcePair: true) }
+                    } else {
+                        self.connect(dev, forcePair: true)
+                    }
+                }
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.connect(dev) }
@@ -329,8 +339,20 @@ final class ProController: NSObject, IOBluetoothL2CAPChannelDelegate, IOBluetoot
         gameDevice = hidDevice
         generation += 1
         let name = IOHIDDeviceGetProperty(hidDevice, kIOHIDProductKey as CFString) as? String ?? "manette"
+        if let serial = IOHIDDeviceGetProperty(hidDevice, kIOHIDSerialNumberKey as CFString) as? String {
+            device = IOBluetoothDevice(addressString: serial.replacingOccurrences(of: "-", with: ":"))
+        }
         log("Manette connectée à macOS (« \(name) ») et laissée au jeu. Lancez le jeu (WiiCompiled…).")
         onPhase?(.ready)
+        // Sans commande, les 4 voyants clignotent comme si la manette n’était pas connectée :
+        // on allume le voyant 1 une fois, puis on referme pour laisser le jeu ouvrir la manette.
+        let gen = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, self.generation == gen, self.gameDevice != nil, let link = HIDLink(device: hidDevice) else { return }
+            let r = link.send([0x11, 0x10])
+            if r != kIOReturnSuccess { log("Voyant joueur 1 : \(hex(r)).") }
+            link.close()
+        }
     }
 
     private func hidDeviceGone(_ hidDevice: IOHIDDevice) {
